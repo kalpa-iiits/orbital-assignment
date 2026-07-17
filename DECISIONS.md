@@ -22,9 +22,10 @@
   case variants, and completely blank CSV records each get an output row. I chose
   traceability over global deduplication; a large-input cache would otherwise add
   memory/state and unclear semantics around duplicate source rows.
-- **Publish atomically.** Results go to a temporary sibling and replace the final
-  JSONL only after the input finishes. This avoids presenting truncation as a
-  completed run. The trade-off is that crash recovery requires rerunning the file.
+- **Publish atomically.** Results and the optional persisted summary go to
+  temporary siblings before replacing their final paths. Input, output, and
+  summary paths must be distinct. This avoids truncation and accidental source
+  overwrite. The trade-off is that crash recovery requires rerunning the file.
 
 ## Assumptions
 
@@ -53,6 +54,7 @@
   latency/retry metrics, and redact provider messages before wider distribution.
 - Domain validation is intentionally syntactic; it does not perform DNS or public
   suffix validation. Those checks could reject legitimate internal/vendor data.
-- Tests cover normalization, selective retry, and visible invalid rows. More time
-  would add a fake HTTP server for timeout, 429, malformed response, and atomic
-  publication integration tests.
+- Tests cover normalization, selective item retry, required request headers,
+  `429`/`Retry-After`, malformed JSON, atomic summary publication, path safety,
+  and visible invalid rows. More time would add a fake HTTP server for socket-level
+  timeout and disconnect integration tests.

@@ -71,7 +71,12 @@ class ProviderClient:
                 body = json.load(response)
         except urllib.error.HTTPError as error:
             raise self._http_error(error) from error
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+        ) as error:
             raise ProviderError("TRANSPORT", str(error), True) from error
 
         if not isinstance(body, dict) or body.get("status") != "ok":

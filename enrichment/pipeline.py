@@ -58,7 +58,8 @@ class EnrichmentPipeline:
                             + "\n"
                         )
             os.replace(temporary, destination)
-        except Exception:
+        except BaseException:
+            # Do not leave a partial artifact after an error or Ctrl+C.
             temporary.unlink(missing_ok=True)
             raise
 

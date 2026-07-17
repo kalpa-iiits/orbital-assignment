@@ -53,15 +53,42 @@ def main(argv: list[str] | None = None) -> int:
         timeout=args.timeout,
         max_attempts=args.max_attempts,
     )
+    summary_path = Path(args.summary) if args.summary else None
 
     try:
+        validate_paths(config, summary_path)
         summary = EnrichmentPipeline(config).run()
+        rendered = json.dumps(summary, indent=2, sort_keys=True)
+        if summary_path:
+            write_atomic(summary_path, rendered + "\n")
     except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
 
-    rendered = json.dumps(summary, indent=2, sort_keys=True)
     print(rendered)
-    if args.summary:
-        Path(args.summary).write_text(rendered + "\n", encoding="utf-8")
     return 0 if summary["failed"] == 0 else 1
+
+
+def validate_paths(config: PipelineConfig, summary_path: Path | None) -> None:
+    """Prevent output files from overwriting the input or each other."""
+    input_path = config.input_path.resolve()
+    output_path = config.output_path.resolve()
+    if input_path == output_path:
+        raise ValueError("--output must be different from --input")
+
+    if summary_path is not None:
+        resolved_summary = summary_path.resolve()
+        if resolved_summary in {input_path, output_path}:
+            raise ValueError("--summary must be different from --input and --output")
+
+
+def write_atomic(path: Path, content: str) -> None:
+    """Publish a text file only after its complete content is written."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise

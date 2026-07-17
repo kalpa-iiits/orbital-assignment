@@ -30,8 +30,9 @@ under an opaque shared vendor limit and still uses the batch endpoint. If measur
 throughput later matters, the extension point is an adaptive rate limiter with a
 small concurrency bound—not unbounded `Promise.all`-style fan-out.
 
-`test_enrich.py` locks down the highest-risk local behavior: non-lossy messy-field
-normalization, selective per-item retries, and visible invalid inputs that do not
-waste quota. `starter-kit/review_me.ts` contains inline blocker comments covering
+The tests lock down the highest-risk behavior: non-lossy messy-field normalization,
+selective per-item retries, required v2/auth headers, `429` handling, malformed
+responses, safe output paths, and visible invalid inputs that do not waste quota.
+`starter-kit/review_me.ts` contains inline blocker comments covering
 credentials, v2 versioning, unbounded concurrency/retries, timeouts/backoff,
 response semantics, data corruption, and silent loss.
