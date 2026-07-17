@@ -51,7 +51,11 @@ class EnrichTests(unittest.TestCase):
                 {"domain": "a.com", "status": "error", "code": "TEMPORARY", "retryable": True},
                 {"domain": "b.com", "status": "error", "code": "NO_MATCH"},
             ],
-            [{"domain": "a.com", "status": "ok", "data": {"name": "A"}}],
+            [{
+                "domain": "a.com",
+                "status": "ok",
+                "data": {"domain": "a.com", "provider_version": 2, "name": "A"},
+            }],
         ])
         pipeline = EnrichmentPipeline(pipeline_config(), client)
         records = pipeline.enrich_batch(rows)
@@ -67,6 +71,22 @@ class EnrichTests(unittest.TestCase):
         records = EnrichmentPipeline(pipeline_config(), client).enrich_batch(rows)
         self.assertEqual(records[0]["status"], "failed")
         self.assertEqual(records[0]["error"]["code"], "BAD_RESPONSE")
+
+    def test_rejects_success_data_from_wrong_provider_version(self):
+        rows = [InputRow(2, "a.com", "a.com")]
+        client = FakeClient([[
+            {
+                "domain": "a.com",
+                "status": "ok",
+                "data": {"domain": "a.com", "provider_version": 1},
+            }
+        ]])
+
+        records = EnrichmentPipeline(pipeline_config(), client).enrich_batch(rows)
+
+        self.assertEqual(records[0]["status"], "failed")
+        self.assertEqual(records[0]["error"]["code"], "BAD_RESPONSE")
+        self.assertIn("version", records[0]["error"]["message"])
 
     def test_invalid_and_empty_rows_are_visible_and_do_not_call_provider(self):
         with tempfile.TemporaryDirectory() as directory:

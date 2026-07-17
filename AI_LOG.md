@@ -1,38 +1,91 @@
 # AI log
 
-Tool used: OpenAI Codex. I used it to inspect the supplied materials, draft the
-stdlib Python implementation and review comments, and run unit/integration
-checks. I kept the design choices explicit rather than accepting the first
-plausible implementation.
+## Tool and workflow
 
-Specific corrections and overrides:
+I used OpenAI Codex in the desktop app. I used it to read the assignment and API
+documentation, draft the Python implementation, review `review_me.ts`, and run
+tests and local provider-backed checks.
 
-1. **Rejected maximum concurrency/batch enthusiasm.** An early direction was to
-   maximize the documented 25-item batch and run batches concurrently. That is
-   locally fast but ignores the shared rate limit and creates retry storms at
-   scale. I chose sequential batches of 10 with configurable size, bounded retry,
-   `Retry-After`, and jitter.
-2. **Rejected `parseInt`-style employee normalization.** Treating all strings as
-   numbers corrupts `"1,000-5,000"` (often into `1`) and erases that it is a
-   range. I modeled employee counts as exact/range/unknown and retained the raw
-   provider record.
-3. **Rejected dropping bad rows.** A convenient draft path filtered invalid
-   domains and terminal provider failures. That conflicts with the assignment's
-   no-silent-loss requirement. Every CSV row now produces an ordered success or
-   failure record, and failures drive a non-zero exit status.
-4. **Distrusted HTTP-only success handling.** A generic client pattern called
-   every HTTP 200 a success. The API explicitly warns against that, so the code
-   checks top-level and per-item body status and treats malformed/count-mismatched
-   responses as visible protocol failures.
-5. **Overrode a lossy “clean schema only” output.** Normalized fields are useful,
-   but provider schemas evolve and normalization can contain bugs. I included the
-   untouched `provider_data` beside normalized data so results can be audited and
-   reprocessed without paying the vendor again.
+I did not treat the first generated version as the submission. My workflow was:
 
-One process mistake is worth calling out: Codex's initial broad repository-read
-command opened `mock-provider.js` along with the assignment and API docs before it
-had parsed the instruction to treat that file as opaque. I corrected course by
-not inspecting or modifying it further and validated behavior through the HTTP
-interface. This is exactly the kind of overly broad AI/tool action I would prevent
-next time by reading the assignment alone first and narrowing subsequent file
-targets explicitly.
+1. read the requirement and provider contract;
+2. ask Codex for a dependency-free Python implementation;
+3. inspect the failure and data-quality paths;
+4. run unit tests and the CLI against the local provider;
+5. challenge parts that were difficult to understand or did not preserve every
+   input row;
+6. refactor and add regression tests for the issues found.
+
+## Places where I corrected or overrode the AI
+
+### 1. I rejected unbounded concurrency
+
+An early direction was to use the largest documented batch size and process
+multiple batches concurrently. That looked faster for the sample file, but each
+domain consumes rate-limit capacity. At 100k rows it would mainly create `429`
+responses and synchronized retries. I chose sequential batches of 10, honored
+`Retry-After`, and kept the batch size configurable.
+
+### 2. I rejected lossy employee-count parsing
+
+A simple implementation could parse every employee value as an integer. That
+would corrupt a band such as `"1,000-5,000"` and would not distinguish `null`
+from malformed data. I changed the normalized schema to represent employee count
+as `exact`, `range`, or `unknown`, while retaining the original provider record.
+
+### 3. I caught silent loss of the blank CSV record
+
+The first CSV implementation used `csv.DictReader`. It handled an empty domain
+cell, but skipped a completely blank physical record. In the supplied file that
+meant row 40 disappeared, which violated the one-outcome-per-input requirement. I
+changed the reader to `csv.reader`, preserved blank records as `INVALID_DOMAIN`,
+and added a regression test that checks their line numbers and output records.
+
+### 4. I pushed back on a single large source file
+
+The working implementation initially put CLI parsing, HTTP behavior,
+normalization, retry policy, and file orchestration in `enrich.py`. It worked, but
+I found the workflow unnecessarily difficult to follow. I split it into a small
+package: `cli.py`, `pipeline.py`, `provider.py`, `normalization.py`, and
+`models.py`. I kept `enrich.py` as a minimal entry point and added a code map to
+the README.
+
+### 5. I added protocol checks beyond “HTTP 200 means success”
+
+The provider documentation explicitly warns that HTTP status is not enough. I
+made the code check top-level status, each item status, result count, nested v2
+version, and returned domains before associating a result with an input row. I
+added tests that verify the bearer token, required v2 header,
+`429`/`Retry-After`, and malformed JSON behavior.
+
+### 6. I rejected publishing partial or conflicting files
+
+The first version atomically published the JSONL result but wrote the optional
+summary directly. It also allowed input, output, and summary paths to collide. I
+changed both outputs to use temporary sibling files, clean them up on errors or
+interruption, and reject path combinations that could overwrite source data or
+results.
+
+## Verification performed
+
+I ran:
+
+```bash
+python3 -m unittest -v
+python3 -m py_compile enrich.py enrichment/*.py test_*.py
+python3 enrich.py --help
+```
+
+The final suite has 10 passing tests. In the final local provider-backed run, all
+40 input records produced output: 36 succeeded, two were `NO_MATCH`, and two were
+invalid inputs, including blank row 40.
+
+## Process mistake
+
+Codex's first broad repository-inspection command opened `mock-provider.js` along
+with the assignment and API documentation before the instruction to treat that
+file as opaque had been applied. I stopped inspecting or modifying it and used
+the documented HTTP interface for subsequent verification. I am recording this
+because hiding an AI/tooling mistake would be worse than acknowledging it. Next
+time I would read the assignment alone first, then explicitly allow-list the
+files used in later inspection commands.

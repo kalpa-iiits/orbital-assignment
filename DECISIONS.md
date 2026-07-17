@@ -1,60 +1,105 @@
 # Decisions
 
-- **Stream with bounded sequential batches.** CSV and JSONL are processed in
-  groups of 10, keeping memory bounded and reducing round trips without flooding
-  the vendor. Ten stays below the documented maximum and leaves rate-limit
-  headroom. `429` honors `Retry-After`; other transient request failures use
-  capped exponential full jitter. Throughput is intentionally conservative and
-  the batch size is configurable.
-- **Bound every retry.** Request-level transport/HTTP failures and retryable
-  per-item outcomes get at most four attempts. Only failed items are retried, so
-  successful domains do not consume quota twice. An exhausted item becomes an
-  explicit output failure.
-- **Trust the body as well as HTTP.** Batch items are checked independently and
-  protocol anomalies (wrong result count/shape) fail visibly. Every request pins
-  provider v2.
-- **Normalize without destroying evidence.** Domains are trimmed, lowercased,
-  IDNA-encoded, and syntax-checked locally. Employee counts become
-  exact/range/unknown, industries always become lists, and locations get stable
-  city/country keys. The untouched provider record is also retained for audit or
-  future reprocessing.
-- **Preserve input cardinality and order.** Invalid inputs, no-matches, duplicates,
-  case variants, and completely blank CSV records each get an output row. I chose
-  traceability over global deduplication; a large-input cache would otherwise add
-  memory/state and unclear semantics around duplicate source rows.
-- **Publish atomically.** Results and the optional persisted summary go to
-  temporary siblings before replacing their final paths. Input, output, and
-  summary paths must be distinct. This avoids truncation and accidental source
-  overwrite. The trade-off is that crash recovery requires rerunning the file.
+## What I optimized for
+
+My first priority was reconciliation: given an input file, an operator must be
+able to account for every row after the run. My second priority was predictable
+behavior against an opaque, rate-limited vendor. I favored bounded resource use
+and explicit failures over maximum local throughput.
+
+## Calls I made
+
+### Use the batch endpoint, but stay conservative
+
+I use sequential batches of 10. The vendor permits 25, but each domain still
+consumes rate-limit capacity, so larger or concurrent batches do not create free
+throughput. Ten reduces HTTP overhead while leaving headroom for an opaque/shared
+limit. I made the size configurable because the right production value should be
+based on measured quota and latency, not hard-coded from one mock run.
+
+I considered bounded concurrency, but did not add it. With a rate-limited vendor,
+concurrency without a calibrated client-side limiter mostly converts useful work
+into `429` responses. Sequential batching is simpler and can still consume the
+documented domain-level rate over a long run.
+
+### Treat request failures and item failures separately
+
+A batch request can fail as a whole because of rate limiting, transport errors,
+or a timeout. It can also return HTTP 200 while individual domains fail. The code
+therefore has two bounded retry paths:
+
+- request-wide transient failures honor `Retry-After` or use capped exponential
+  full jitter;
+- retryable item failures are retried without resending items that already
+  succeeded.
+
+Both paths stop after the configured attempt limit. Once retries are exhausted,
+the affected domains are written as failures instead of hanging the run or being
+dropped. I chose a six-second request timeout because the documented slow calls
+can take several seconds; a shorter value would manufacture avoidable retries.
+
+### Preserve one outcome per CSV row
+
+I preserve input order and cardinality. Invalid domains, blank records,
+duplicates, case variants, no-matches, and exhausted transient failures all
+produce output records. Each record includes the source CSV line number and
+original value, which makes the result reconcilable without relying on domain
+uniqueness.
+
+I deliberately did not globally deduplicate domains. A global cache adds memory
+or persistent-state requirements and complicates row-level accounting. If vendor
+cost made deduplication important, I would add a durable domain-result cache while
+still emitting one result per source row.
+
+### Normalize useful fields without discarding evidence
+
+The provider returns legitimate variations rather than one stable schema. I map
+employee counts to `exact`, `range`, or `unknown`; industries to a list; and
+locations to consistent city/country keys. I do not turn a band such as
+`1,000-5,000` into a guessed point value.
+
+The normalized view is convenient for downstream consumers, but normalization
+rules can be incomplete or change. I therefore retain the untouched provider
+record beside it. That allows auditing or reprocessing without purchasing the
+same enrichment again.
+
+### Validate the protocol, not just HTTP status
+
+Every request pins provider version 2. I check top-level status, result count,
+each item's status, the nested `provider_version`, and both returned domain
+fields before accepting a success. This is intentional because HTTP 200 does not
+guarantee per-domain success. A version, shape, domain, or count mismatch becomes
+`BAD_RESPONSE`; I do not guess which result belongs to which input.
+
+### Stream and publish atomically
+
+CSV input and JSONL output are streamed in bounded groups, so memory use does not
+grow with a 100k-row file. JSONL also allows downstream streaming and naturally
+represents mixed success/failure outcomes.
+
+The final result and optional summary are written through temporary sibling files
+and atomically replaced only after complete writes. Input, output, and summary
+paths must be distinct. A fatal error or interruption therefore cannot present a
+partial result as a completed run. The trade-off is no checkpoint/resume: a
+crashed run starts over.
 
 ## Assumptions
 
-- A CSV header named `domain` is required unless `--column` overrides it.
-- A syntactically invalid domain should not consume vendor quota.
-- A partial run is useful, but must return exit code 1 and retain every failure.
-- Provider results correspond positionally to batch inputs; a count mismatch is
-  treated as a protocol failure rather than guessed at.
+- The input is CSV with a header named `domain`, unless `--column` overrides it.
+- Syntax validation is enough before calling the vendor. DNS and public-suffix
+  checks could reject legitimate records and introduce another network dependency.
+- A completed run with domain-level failures is useful, but must return exit code
+  1. Configuration or file errors return 2.
+- The batch response is positional, as documented. I still validate count and
+  returned domain before attaching a result to an input row.
 
-## Provider observations
+## Where I stopped
 
-- Success/error cannot be inferred from HTTP status alone; per-item body status
-  is authoritative.
-- Fields vary in type, including employee bands and string/object locations.
-- Slow responses, transient items, and request-wide rate limits require separate
-  handling.
+I did not add a framework, database, async runtime, or production observability
+stack. They would increase the review surface without improving the core behavior
+this exercise evaluates.
 
-## Known limitations / another day
-
-- There is no checkpoint/resume. For very costly 100k+ runs I would write to a
-  durable store with idempotent input IDs and resumable partitions.
-- Sequential batching favors predictability over maximum throughput. I would add
-  an adaptive token-bucket scheduler with small bounded concurrency, driven by
-  measured vendor limits and metrics.
-- The CLI has logs only at completion. Production would emit structured progress,
-  latency/retry metrics, and redact provider messages before wider distribution.
-- Domain validation is intentionally syntactic; it does not perform DNS or public
-  suffix validation. Those checks could reject legitimate internal/vendor data.
-- Tests cover normalization, selective item retry, required request headers,
-  `429`/`Retry-After`, malformed JSON, atomic summary publication, path safety,
-  and visible invalid rows. More time would add a fake HTTP server for socket-level
-  timeout and disconnect integration tests.
+With another day, I would add durable checkpoints and idempotent input IDs for
+expensive long-running jobs, then introduce a measured token-bucket scheduler
+with small bounded concurrency. I would also emit structured progress and latency
+metrics, and add socket-level timeout/disconnect tests using a fake HTTP server.

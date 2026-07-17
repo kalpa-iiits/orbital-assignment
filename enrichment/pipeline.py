@@ -134,7 +134,13 @@ class EnrichmentPipeline:
                 )
                 continue
 
-            if item.get("status") == "ok" and isinstance(item.get("data"), dict):
+            if item.get("status") == "ok":
+                data_error = _validate_success_data(item.get("data"), rows[index])
+                if data_error is not None:
+                    output[index] = _failure(
+                        rows[index], "BAD_RESPONSE", data_error
+                    )
+                    continue
                 output[index] = _success(rows[index], item["data"])
                 continue
 
@@ -199,6 +205,17 @@ def _item_matches_row(item: Any, row: InputRow) -> bool:
     if not isinstance(item, dict):
         return False
     return normalize_domain(str(item.get("domain", ""))) == row.domain
+
+
+def _validate_success_data(data: Any, row: InputRow) -> str | None:
+    """Return a protocol error message, or None when v2 data is trustworthy."""
+    if not isinstance(data, dict):
+        return "successful provider item has no data object"
+    if data.get("provider_version") != 2:
+        return "provider returned an unexpected data version"
+    if normalize_domain(str(data.get("domain", ""))) != row.domain:
+        return "provider data domain did not match request"
+    return None
 
 
 def _success(row: InputRow, data: dict[str, Any]) -> dict[str, Any]:
