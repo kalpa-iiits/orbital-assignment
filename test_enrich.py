@@ -1,21 +1,33 @@
 import json
 import tempfile
 import unittest
-from argparse import Namespace
 from pathlib import Path
 from unittest.mock import patch
 
-import enrich
+from enrichment import EnrichmentPipeline, InputRow, PipelineConfig, normalize_data
 
 
 class FakeClient:
-    max_attempts = 3
-
     def __init__(self, responses):
         self.responses = iter(responses)
 
     def enrich(self, domains):
         return next(self.responses)
+
+
+def pipeline_config(**overrides):
+    values = {
+        "input_path": Path("unused.csv"),
+        "output_path": Path("unused.jsonl"),
+        "column": "domain",
+        "base_url": "http://unused",
+        "token": "token",
+        "batch_size": 10,
+        "timeout": 1,
+        "max_attempts": 3,
+    }
+    values.update(overrides)
+    return PipelineConfig(**values)
 
 
 class EnrichTests(unittest.TestCase):
@@ -26,14 +38,14 @@ class EnrichTests(unittest.TestCase):
             "industry": "SaaS",
             "location": "Austin",
         }
-        normalized = enrich.normalize_data(data)
+        normalized = normalize_data(data)
         self.assertEqual(normalized["employee_count"], {"kind": "range", "min": 1000, "max": 5000})
         self.assertEqual(normalized["industries"], ["SaaS"])
         self.assertEqual(normalized["location"], {"city": "Austin", "country": None})
 
-    @patch("enrich.ProviderClient._sleep")
+    @patch("enrichment.pipeline.sleep_before_retry")
     def test_retries_only_retryable_items(self, _sleep):
-        rows = [enrich.InputRow(2, "a.com", "a.com"), enrich.InputRow(3, "b.com", "b.com")]
+        rows = [InputRow(2, "a.com", "a.com"), InputRow(3, "b.com", "b.com")]
         client = FakeClient([
             [
                 {"domain": "a.com", "status": "error", "code": "TEMPORARY", "retryable": True},
@@ -41,18 +53,18 @@ class EnrichTests(unittest.TestCase):
             ],
             [{"domain": "a.com", "status": "ok", "data": {"name": "A"}}],
         ])
-        metrics = enrich.Metrics()
-        records = enrich.enrich_batch(rows, client, metrics)
+        pipeline = EnrichmentPipeline(pipeline_config(), client)
+        records = pipeline.enrich_batch(rows)
         self.assertEqual([record["status"] for record in records], ["succeeded", "failed"])
         self.assertEqual(records[1]["error"]["code"], "NO_MATCH")
-        self.assertEqual(metrics.item_retries, 1)
+        self.assertEqual(pipeline.metrics.item_retries, 1)
 
     def test_does_not_attach_a_result_to_the_wrong_domain(self):
-        rows = [enrich.InputRow(2, "a.com", "a.com")]
+        rows = [InputRow(2, "a.com", "a.com")]
         client = FakeClient(
             [[{"domain": "other.com", "status": "ok", "data": {"name": "Other"}}]]
         )
-        records = enrich.enrich_batch(rows, client, enrich.Metrics())
+        records = EnrichmentPipeline(pipeline_config(), client).enrich_batch(rows)
         self.assertEqual(records[0]["status"], "failed")
         self.assertEqual(records[0]["error"]["code"], "BAD_RESPONSE")
 
@@ -61,12 +73,12 @@ class EnrichTests(unittest.TestCase):
             source = Path(directory) / "in.csv"
             output = Path(directory) / "out.jsonl"
             source.write_text("domain\n\nnot a domain\n", encoding="utf-8")
-            args = Namespace(
-                input=str(source), output=str(output), summary=None, column="domain",
-                base_url="http://unused", token="token", batch_size=10, timeout=1,
+            config = pipeline_config(
+                input_path=source,
+                output_path=output,
                 max_attempts=1,
             )
-            summary = enrich.run(args)
+            summary = EnrichmentPipeline(config).run()
             records = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(summary["failure_reasons"], {"INVALID_DOMAIN": 2})
             self.assertEqual([record["row_number"] for record in records], [2, 3])

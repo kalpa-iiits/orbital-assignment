@@ -3,8 +3,10 @@
 This change adds a small, dependency-free enrichment job designed around one
 invariant: every input row has an observable outcome.
 
-`enrich.py` streams CSV into bounded batches. It normalizes and validates domains
-before calling the v2 batch endpoint. The client distinguishes request-wide
+`enrichment/pipeline.py` contains `EnrichmentPipeline`, which streams CSV into
+bounded batches and owns run orchestration, output, and metrics. It uses the pure
+helpers in `enrichment/normalization.py` before calling the v2 batch endpoint.
+`ProviderClient` in `enrichment/provider.py` separately distinguishes request-wide
 failures (HTTP, transport, invalid top-level responses) from item failures.
 Request-wide transient failures use bounded backoff; per-item `TEMPORARY`
 outcomes retry only those domains. `NO_MATCH` and other terminal outcomes are

@@ -46,6 +46,30 @@ Run the tests:
 python3 -m unittest -v
 ```
 
+## Code map and workflow
+
+Start reading at `enrich.py`. It only hands control to the CLI. Each module then
+has one job:
+
+```text
+enrich.py
+  -> enrichment/cli.py             parse options and create configuration
+  -> enrichment/pipeline.py        read rows, batch work, write output/summary
+       -> enrichment/provider.py   HTTP calls, timeouts, request retries
+       -> enrichment/normalization.py
+                                    validate domains and normalize messy fields
+       -> enrichment/models.py     shared configuration, row, and metric objects
+```
+
+For each input batch, the workflow is:
+
+1. Read CSV rows without loading the whole file into memory. Blank rows are kept.
+2. Normalize and validate each domain. Invalid rows become failure records.
+3. Send valid domains to the provider's v2 batch endpoint.
+4. Retry request failures and retryable item failures within fixed limits.
+5. Normalize successful data and write every success/failure as one JSONL line.
+6. Atomically publish the output and print the run summary.
+
 ## Output contract
 
 `enriched.jsonl` is replace-on-success: a fatal run error does not publish a
