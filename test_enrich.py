@@ -56,20 +56,22 @@ class EnrichTests(unittest.TestCase):
         self.assertEqual(records[0]["status"], "failed")
         self.assertEqual(records[0]["error"]["code"], "BAD_RESPONSE")
 
-    def test_invalid_rows_are_visible_and_do_not_call_provider(self):
+    def test_invalid_and_empty_rows_are_visible_and_do_not_call_provider(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "in.csv"
             output = Path(directory) / "out.jsonl"
-            source.write_text("domain\nnot a domain\n", encoding="utf-8")
+            source.write_text("domain\n\nnot a domain\n", encoding="utf-8")
             args = Namespace(
                 input=str(source), output=str(output), summary=None, column="domain",
                 base_url="http://unused", token="token", batch_size=10, timeout=1,
                 max_attempts=1,
             )
             summary = enrich.run(args)
-            record = json.loads(output.read_text(encoding="utf-8"))
-            self.assertEqual(summary["failure_reasons"], {"INVALID_DOMAIN": 1})
-            self.assertEqual(record["status"], "failed")
+            records = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(summary["failure_reasons"], {"INVALID_DOMAIN": 2})
+            self.assertEqual([record["row_number"] for record in records], [2, 3])
+            self.assertEqual(records[0]["input_domain"], "")
+            self.assertTrue(all(record["status"] == "failed" for record in records))
             self.assertEqual(summary["provider_requests"], 0)
 
 

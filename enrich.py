@@ -63,13 +63,20 @@ def is_valid_domain(domain: str) -> bool:
 
 def read_rows(path: Path, column: str) -> Iterator[InputRow]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
-        reader = csv.DictReader(handle)
-        if reader.fieldnames is None or column not in reader.fieldnames:
-            found = ", ".join(reader.fieldnames or []) or "no header"
+        reader = csv.reader(handle)
+        try:
+            header = next(reader)
+        except StopIteration:
+            header = []
+        if column not in header:
+            found = ", ".join(header) or "no header"
             raise ValueError(f"input must contain a {column!r} column (found: {found})")
-        for row_number, row in enumerate(reader, start=2):
-            raw = row.get(column) or ""
-            yield InputRow(row_number, raw, normalize_domain(raw))
+        column_index = header.index(column)
+        for row in reader:
+            # csv.reader returns [] for a blank record. Preserve it so every
+            # input row, including an empty one, receives a visible outcome.
+            raw = row[column_index] if column_index < len(row) else ""
+            yield InputRow(reader.line_num, raw, normalize_domain(raw))
 
 
 def chunks(values: Iterable[InputRow], size: int) -> Iterator[list[InputRow]]:

@@ -19,9 +19,9 @@
   city/country keys. The untouched provider record is also retained for audit or
   future reprocessing.
 - **Preserve input cardinality and order.** Invalid inputs, no-matches, duplicates,
-  and case variants each get an output row. I chose traceability over global
-  deduplication; a large-input cache would otherwise add memory/state and unclear
-  semantics around duplicate source rows.
+  case variants, and completely blank CSV records each get an output row. I chose
+  traceability over global deduplication; a large-input cache would otherwise add
+  memory/state and unclear semantics around duplicate source rows.
 - **Publish atomically.** Results go to a temporary sibling and replace the final
   JSONL only after the input finishes. This avoids presenting truncation as a
   completed run. The trade-off is that crash recovery requires rerunning the file.
